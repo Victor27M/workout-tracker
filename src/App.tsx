@@ -157,17 +157,16 @@ function ExerciseLog({ e, date, logs, rows, startOpen, history }: {
             const cur = mine.find((l) => l.i === i);
             const prev = last.sets.find((l) => l.i === i) ?? last.sets.at(-1);
             return (
-              <div className="set" key={i}>
+              <SwipeRow key={i} label={`Delete set ${i + 1}`} onDelete={() => removeSet(date, e.id, i, rows)}>
                 <span className={`n${cur?.r !== undefined ? ' on' : ''}`}>{i + 1}</span>
                 {e.load && <Num value={cur?.w} ph={prev?.w} label="kg" onSave={(w) => saveSet(date, e.id, i, { w })} />}
                 <Num value={cur?.r} ph={prev?.r} label={UNIT[e.unit]} onSave={(r) => saveSet(date, e.id, i, { r })} />
-                <button className="del" aria-label={`Remove set ${i + 1}`}
-                  onClick={() => { if (!cur || confirm(`Remove set ${i + 1}?`)) removeSet(date, e.id, i, rows); }}>×</button>
-              </div>
+              </SwipeRow>
             );
           })}
         </div>
         <button className="add" onClick={() => setCount(date, e.id, rows + 1)}>+ Add set</button>
+        {rows > 0 && <div className="swipe-hint">Swipe a set left to delete</div>}
         <div className="foot small muted">
           <span>{last.date ? `Last ${fmtDate(last.date)}: ${last.sets.map((s) => fmtSet(s, e.unit)).join(', ')}` : 'No history yet'}</span>
           <button className="link" onClick={history}>Graph ›</button>
@@ -175,6 +174,50 @@ function ExerciseLog({ e, date, logs, rows, startOpen, history }: {
       </div>}
     </section>
   );
+}
+
+/** iOS-style row: drag left to reveal Delete, or swipe all the way to delete at once. */
+function SwipeRow({ label, onDelete, children }: { label: string; onDelete: () => void; children: React.ReactNode }) {
+  const OPEN = 84;
+  const [x, setX] = useState(0);
+  const [drag, setDrag] = useState(false);
+  const start = useRef<{ x: number; y: number; base: number; h?: boolean } | null>(null);
+  const del = () => { setX(0); onDelete(); };
+  return (
+    <div className="swipe">
+      <button className="swipe-del" style={{ width: Math.max(OPEN, -x) }} onClick={del} aria-label={label} tabIndex={x ? 0 : -1}>Delete</button>
+      <div className="set" style={{ transform: `translateX(${x}px)`, transition: drag ? 'none' : undefined }}
+        onPointerDown={(ev) => {
+          if (x) { setX(0); return; } // tap an open row to close it
+          start.current = { x: ev.clientX, y: ev.clientY, base: x };
+        }}
+        onPointerMove={(ev) => {
+          const s = start.current;
+          if (!s) return;
+          const dx = ev.clientX - s.x, dy = ev.clientY - s.y;
+          if (s.h === undefined) {
+            if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+            s.h = Math.abs(dx) > Math.abs(dy);
+            if (!s.h) { start.current = null; return; } // vertical: let the page scroll
+            ev.currentTarget.setPointerCapture(ev.pointerId);
+            (document.activeElement as HTMLElement | null)?.blur();
+            setDrag(true);
+          }
+          setX(Math.min(0, s.base + dx));
+        }}
+        onPointerUp={() => {
+          const s = start.current; start.current = null; setDrag(false);
+          if (!s?.h) return;
+          const w = snap(x);
+          if (w === 'delete') del(); else setX(w === 'open' ? -OPEN : 0);
+        }}
+        onPointerCancel={() => { start.current = null; setDrag(false); setX(0); }}
+        onDragStart={(ev) => ev.preventDefault()} /* no text drag-and-drop between inputs while swiping */>
+        {children}
+      </div>
+    </div>
+  );
+  function snap(v: number) { return v < -OPEN * 2.2 ? 'delete' : v < -OPEN / 2 ? 'open' : 'closed'; }
 }
 
 /** Uncontrolled so half-typed values like "22," survive; saves on every keystroke.

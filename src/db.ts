@@ -22,10 +22,14 @@ class DB extends Dexie {
 export const db = new DB();
 navigator.storage?.persist?.().catch(() => {}); // ask the browser not to evict our data
 
-export async function saveSet(date: string, exId: string, i: number, w?: number, r?: number) {
+/** Patch one field ({w} or {r}) of a set; reads the current row inside the transaction so fast typing can't clobber the other field. */
+export function saveSet(date: string, exId: string, i: number, patch: { w?: number } | { r?: number }) {
   const id = `${date}|${exId}|${i}`;
-  if (w === undefined && r === undefined) await db.sets.delete(id);
-  else await db.sets.put({ id, date, exId, i, w, r, updatedAt: Date.now() });
+  return db.transaction('rw', db.sets, async () => {
+    const next = { ...(await db.sets.get(id)), ...patch };
+    if (next.w === undefined && next.r === undefined) await db.sets.delete(id);
+    else await db.sets.put({ ...next, id, date, exId, i, updatedAt: Date.now() });
+  });
 }
 
 const APP = 'workout-tracker';

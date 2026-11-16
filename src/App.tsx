@@ -53,7 +53,7 @@ function DayView({ date, today, setDate, open, settings }: {
   const day = useLiveQuery(() => db.days.get(dayId), [dayId]);
   const loaded = useLiveQuery(() => db.exercises.where('day').equals(dayId).sortBy('order'), [dayId]);
   const exercises = loaded ?? [];
-  const logs = useLiveQuery(() => db.sets.toArray(), []) ?? [];
+  const logs = useLiveQuery(() => db.sets.toArray(), []);
   const active = exercises.filter((e) => !e.archived);
 
   return (
@@ -92,9 +92,9 @@ function DayView({ date, today, setDate, open, settings }: {
 
       {loaded && active.length === 0 && !edit && <p className="muted empty">{dayId === 'sun' ? 'Rest day.' : 'Nothing planned. Tap Edit to add exercises.'}</p>}
 
-      {active.map((e, idx) => edit
+      {(edit || logs) && active.map((e, idx) => edit
         ? <ExerciseEdit key={e.id} e={e} prev={active[idx - 1]} next={active[idx + 1]} />
-        : <ExerciseLog key={e.id + date} e={e} date={date} logs={logs} open={() => open(e.id)} />)}
+        : <ExerciseLog key={e.id + date} e={e} date={date} logs={logs!} open={() => open(e.id)} />)}
 
       {edit && (
         <button className="btn wide" onClick={() => db.exercises.add({
@@ -131,9 +131,9 @@ function ExerciseLog({ e, date, logs, open }: { e: Exercise; date: string; logs:
           return (
             <div className="set" key={i}>
               <span className="n">{i + 1}</span>
-              {e.load && <Num value={cur?.w} ph={prev?.w} label="kg" onSave={(w) => saveSet(date, e.id, i, w, cur?.r)} />}
+              {e.load && <Num value={cur?.w} ph={prev?.w} label="kg" onSave={(w) => saveSet(date, e.id, i, { w })} />}
               {e.load && <span className="x">×</span>}
-              <Num value={cur?.r} ph={prev?.r} label={UNIT[e.unit]} onSave={(r) => saveSet(date, e.id, i, cur?.w, r)} />
+              <Num value={cur?.r} ph={prev?.r} label={UNIT[e.unit]} onSave={(r) => saveSet(date, e.id, i, { r })} />
             </div>
           );
         })}

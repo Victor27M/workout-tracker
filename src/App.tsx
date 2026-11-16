@@ -50,7 +50,8 @@ function DayView({ date, today, setDate, open, settings }: {
 }) {
   const [edit, setEdit] = useState(false);
   const dayId = weekday(date);
-  const day = useLiveQuery(() => db.days.get(dayId), [dayId]);
+  const loadedDay = useLiveQuery(() => db.days.get(dayId), [dayId]);
+  const day = loadedDay?.id === dayId ? loadedDay : undefined; // never show (and edit) the previous day while loading
   const loaded = useLiveQuery(() => db.exercises.where('day').equals(dayId).sortBy('order'), [dayId]);
   const exercises = loaded ?? [];
   const logs = useLiveQuery(() => db.sets.toArray(), []);
@@ -75,7 +76,7 @@ function DayView({ date, today, setDate, open, settings }: {
             {fromKey(date).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })}
             {date !== today && <> · <button className="link" onClick={() => setDate(today)}>Today</button></>}
           </div>
-          {edit
+          {edit && day
             ? <input className="title-in" defaultValue={day?.title} key={dayId} onChange={(e) => db.days.update(dayId, { title: e.target.value })} />
             : <h1>{day?.title}</h1>}
         </div>
@@ -85,7 +86,7 @@ function DayView({ date, today, setDate, open, settings }: {
         </div>
       </header>
 
-      {edit
+      {edit && day
         ? <textarea className="notes-in" rows={4} defaultValue={day?.notes} key={dayId + 'n'} placeholder="Notes (warm-up, reminders…)"
             onChange={(e) => db.days.update(dayId, { notes: e.target.value })} />
         : day?.notes && <p className="notes">{day.notes}</p>}

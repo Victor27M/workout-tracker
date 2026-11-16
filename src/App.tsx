@@ -1,7 +1,7 @@
 import { useLiveQuery } from 'dexie-react-hooks';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Chart, fmtDate } from './Chart.tsx';
-import { db, exportBackup, importBackup, saveSet } from './db.ts';
+import { dayCounts, db, exportBackup, importBackup, removeSet, saveSet, setCount } from './db.ts';
 import { addDays, dateKey, fromKey, lastSession, parseNum, readyToAdd, resolveHash, sessions, weekOf, weekday, type SetLog } from './logic.ts';
 import type { Exercise, Unit } from './plan.ts';
 
@@ -55,7 +55,13 @@ function DayView({ date, today, setDate, open, settings }: {
   const loaded = useLiveQuery(() => db.exercises.where('day').equals(dayId).sortBy('order'), [dayId]);
   const exercises = loaded ?? [];
   const logs = useLiveQuery(() => db.sets.toArray(), []);
+  const counts = useLiveQuery(() => dayCounts(date), [date]);
   const active = exercises.filter((e) => !e.archived);
+  const rowsOf = (e: Exercise) => rows(e, logs ?? [], counts, date);
+  const doneOf = (e: Exercise) => (logs ?? []).filter((l) => l.exId === e.id && l.date === date && l.r !== undefined).length;
+  const planned = active.reduce((t, e) => t + rowsOf(e), 0);
+  const done = active.reduce((t, e) => t + Math.min(doneOf(e), rowsOf(e)), 0);
+  const firstOpen = active.find((e) => doneOf(e) < rowsOf(e))?.id;
 
   return (
     <main>
@@ -91,11 +97,18 @@ function DayView({ date, today, setDate, open, settings }: {
             onChange={(e) => db.days.update(dayId, { notes: e.target.value })} />
         : day?.notes && <p className="notes">{day.notes}</p>}
 
+      {!edit && planned > 0 && (
+        <div className="progress" aria-label={`${done} of ${planned} sets done`}>
+          <div className="bar"><div style={{ width: `${(done / planned) * 100}%` }} /></div>
+          <span className="small muted">{done}/{planned} sets</span>
+        </div>
+      )}
+
       {loaded && active.length === 0 && !edit && <p className="muted empty">{dayId === 'sun' ? 'Rest day.' : 'Nothing planned. Tap Edit to add exercises.'}</p>}
 
-      {(edit || logs) && active.map((e, idx) => edit
+      {(edit || (logs && counts)) && active.map((e, idx) => edit
         ? <ExerciseEdit key={e.id} e={e} prev={active[idx - 1]} next={active[idx + 1]} />
-        : <ExerciseLog key={e.id + date} e={e} date={date} logs={logs!} open={() => open(e.id)} />)}
+        : <ExerciseLog key={e.id + date} e={e} date={date} logs={logs!} rows={rowsOf(e)} startOpen={e.id === firstOpen} history={() => open(e.id)} />)}
 
       {edit && (
         <button className="btn wide" onClick={() => db.exercises.add({
@@ -107,51 +120,74 @@ function DayView({ date, today, setDate, open, settings }: {
   );
 }
 
-function ExerciseLog({ e, date, logs, open }: { e: Exercise; date: string; logs: SetLog[]; open: () => void }) {
+/** Rows shown: the per-day count if you added/removed sets, else the plan; never hides a logged set. */
+const rows = (e: Exercise, logs: SetLog[], counts: Map<string, number> | undefined, date: string) =>
+  Math.max(counts?.get(e.id) ?? e.sets, ...logs.filter((l) => l.exId === e.id && l.date === date).map((l) => l.i + 1));
+
+function ExerciseLog({ e, date, logs, rows, startOpen, history }: {
+  e: Exercise; date: string; logs: SetLog[]; rows: number; startOpen: boolean; history: () => void;
+}) {
+  const [open, setOpen] = useState(startOpen);
   const mine = logs.filter((l) => l.exId === e.id && l.date === date);
   const last = lastSession(logs, e.id, date);
-  const extra = Math.max(0, ...mine.map((l) => l.i + 1)) - e.sets; // sets logged beyond the plan
-  const [added, setAdded] = useState(0);
-  const rows = e.sets + Math.max(extra, added);
   const done = mine.filter((l) => l.r !== undefined).length;
+  const complete = rows > 0 && done >= rows;
+  const summary = mine.length ? [...mine].sort((a, b) => a.i - b.i).map((s) => fmtSet(s, e.unit)).join(', ') : target(e);
 
   return (
-    <section className={`card${e.group ? ' ss' : ''}`}>
-      <button className="card-head" onClick={open}>
-        <span className="name">{e.name}{e.optional && <span className="muted"> · optional</span>}</span>
-        <span className="muted small">{done}/{e.sets} ›</span>
+    <section className={`card${open ? ' open' : ''}${complete ? ' done' : ''}`}>
+      <button className="card-head" onClick={() => setOpen(!open)} aria-expanded={open}>
+        <span className={`check${complete ? ' on' : ''}`} aria-hidden>{complete ? '✓' : ''}</span>
+        <span className="title">
+          <span className="name">{e.name}</span>
+          <span className="sub">
+            {e.group && <span className="tag">SS {e.group}</span>}
+            {e.optional && <span className="tag">optional</span>}
+            {open ? `${target(e)}${e.note ? ` · ${e.note}` : ''}` : summary}
+          </span>
+        </span>
+        <span className="count">{done}/{rows}</span>
+        <svg className="chev" viewBox="0 0 16 16" aria-hidden><polyline points="4,6 8,10 12,6" /></svg>
       </button>
-      <div className="muted small">
-        {e.group && <span className="tag">SS {e.group}</span>}{target(e)}{e.note && ` · ${e.note}`}
-      </div>
-      {last.date && readyToAdd(last.sets, e.sets, e.max) && <div className="up">↑ Top of range last time. Add load if it felt like 2 RIR.</div>}
-      <div className="sets">
-        {Array.from({ length: rows }, (_, i) => {
-          const cur = mine.find((l) => l.i === i);
-          const prev = last.sets.find((l) => l.i === i) ?? last.sets.at(-1);
-          return (
-            <div className="set" key={i}>
-              <span className="n">{i + 1}</span>
-              {e.load && <Num value={cur?.w} ph={prev?.w} label="kg" onSave={(w) => saveSet(date, e.id, i, { w })} />}
-              {e.load && <span className="x">×</span>}
-              <Num value={cur?.r} ph={prev?.r} label={UNIT[e.unit]} onSave={(r) => saveSet(date, e.id, i, { r })} />
-            </div>
-          );
-        })}
-      </div>
-      <div className="foot small muted">
-        <span>{last.date ? `Last ${fmtDate(last.date)}: ${last.sets.map((s) => fmtSet(s, e.unit)).join(', ')}` : 'No history yet'}</span>
-        <button className="link" onClick={() => setAdded(Math.max(extra, added) + 1)}>+ set</button>
-      </div>
+
+      {open && <div className="body">
+        {last.date && readyToAdd(last.sets, e.sets, e.max) && <div className="up">↑ Top of range last time. Add load if it felt like 2 RIR.</div>}
+        <div className="sets">
+          {Array.from({ length: rows }, (_, i) => {
+            const cur = mine.find((l) => l.i === i);
+            const prev = last.sets.find((l) => l.i === i) ?? last.sets.at(-1);
+            return (
+              <div className="set" key={i}>
+                <span className={`n${cur?.r !== undefined ? ' on' : ''}`}>{i + 1}</span>
+                {e.load && <Num value={cur?.w} ph={prev?.w} label="kg" onSave={(w) => saveSet(date, e.id, i, { w })} />}
+                <Num value={cur?.r} ph={prev?.r} label={UNIT[e.unit]} onSave={(r) => saveSet(date, e.id, i, { r })} />
+                <button className="del" aria-label={`Remove set ${i + 1}`}
+                  onClick={() => { if (!cur || confirm(`Remove set ${i + 1}?`)) removeSet(date, e.id, i, rows); }}>×</button>
+              </div>
+            );
+          })}
+        </div>
+        <button className="add" onClick={() => setCount(date, e.id, rows + 1)}>+ Add set</button>
+        <div className="foot small muted">
+          <span>{last.date ? `Last ${fmtDate(last.date)}: ${last.sets.map((s) => fmtSet(s, e.unit)).join(', ')}` : 'No history yet'}</span>
+          <button className="link" onClick={history}>Graph ›</button>
+        </div>
+      </div>}
     </section>
   );
 }
 
-/** Uncontrolled so half-typed values like "22," survive; saves on every keystroke. */
+/** Uncontrolled so half-typed values like "22," survive; saves on every keystroke.
+ *  Picks up outside changes (a removed set shifting up, an import) while not being typed in. */
 function Num({ value, ph, label, onSave }: { value?: number; ph?: number; label: string; onSave: (v?: number) => void }) {
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (el && document.activeElement !== el && parseNum(el.value) !== value) el.value = value === undefined ? '' : String(value);
+  }, [value]);
   return (
     <label className="num">
-      <input inputMode="decimal" defaultValue={value ?? ''} placeholder={ph !== undefined ? String(ph) : '–'}
+      <input ref={ref} inputMode="decimal" defaultValue={value ?? ''} placeholder={ph !== undefined ? String(ph) : '–'}
         onChange={(ev) => onSave(parseNum(ev.target.value))} onFocus={(ev) => ev.target.select()} />
       <span>{label}</span>
     </label>

@@ -32,6 +32,22 @@ export function saveSet(date: string, exId: string, i: number, patch: { w?: numb
   });
 }
 
+/** How many set rows an exercise shows on a given date (defaults to the plan). */
+const countKey = (date: string, exId: string) => `n|${date}|${exId}`;
+export const setCount = (date: string, exId: string, n: number) => db.meta.put({ key: countKey(date, exId), value: String(n) });
+export const dayCounts = async (date: string) =>
+  new Map((await db.meta.where('key').startsWith(`n|${date}|`).toArray()).map((m) => [m.key.split('|')[2], Number(m.value)]));
+
+/** Delete set i and move the later sets up one, so numbering stays 1..n. */
+export function removeSet(date: string, exId: string, i: number, rows: number) {
+  return db.transaction('rw', db.sets, db.meta, async () => {
+    const later = (await db.sets.where('exId').equals(exId).toArray()).filter((s) => s.date === date && s.i >= i);
+    await db.sets.bulkDelete(later.map((s) => s.id));
+    await db.sets.bulkPut(later.filter((s) => s.i > i).map((s) => ({ ...s, i: s.i - 1, id: `${date}|${exId}|${s.i - 1}` })));
+    await setCount(date, exId, Math.max(0, rows - 1));
+  });
+}
+
 const APP = 'workout-tracker';
 export async function exportBackup() {
   const tables: Record<string, unknown[]> = {};
